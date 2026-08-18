@@ -41,6 +41,19 @@ impl InputSource for Monitor {
     }
 }
 
+impl Monitor {
+    pub fn set_feature(&mut self, feature: u8, value: u16) -> Result<()> {
+        if self.display.handle.set_vcp_feature(feature, value).is_ok() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        self.display
+            .handle
+            .set_vcp_feature(feature, value)
+            .with_context(|| format!("setting VCP 0x{feature:02X} to {value} on {}", self.label))
+    }
+}
+
 pub fn open(model: Option<&str>) -> Result<Monitor> {
     let display = select(model)?;
     let label = describe(&display.info);

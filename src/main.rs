@@ -2,17 +2,20 @@
 // console window. `attach_parent_console` reattaches to a terminal for CLI use.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod action;
 mod cli;
 mod config;
+mod hdr;
 mod hotkey;
 mod monitor;
 mod startup;
 mod usb;
+mod vendor;
 mod wake;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{Cli, Command, ModeState, MsiAction, VendorCommand};
 use config::Config;
 use monitor::InputSource;
 use std::path::Path;
@@ -58,8 +61,12 @@ fn run(cli: Cli) -> Result<()> {
         Command::List => cmd_list(&cfg),
         Command::Set { input } => cmd_set(&cfg, model, &input),
         Command::Toggle => cmd_toggle(&cfg, model),
-        Command::Listen => hotkey::listen(&cfg, model),
-        Command::Watch => usb::watch(&cfg, model),
+        Command::Mode { name, state } => cmd_mode(&cfg, model, &name, state),
+        Command::Hdr { state } => cmd_hdr(model, state),
+        Command::Vendor { vendor } => match vendor {
+            VendorCommand::Msi { action } => cmd_msi(action),
+        },
+        Command::Watch => hotkey::watch(&cfg, model),
         Command::Usb => usb::list(),
         Command::Startup { remove } => cmd_startup(&cfg, config.as_deref(), remove),
         Command::Switch(args) => match args.as_slice() {
@@ -69,30 +76,83 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+fn cmd_hdr(model: Option<&str>, state: Option<ModeState>) -> Result<()> {
+    if let Some(state) = state {
+        hdr::set(model, state == ModeState::On)?;
+    }
+    let enabled = hdr::get(model)?;
+    println!("Windows HDR: {}", if enabled { "on" } else { "off" });
+    Ok(())
+}
+
+fn cmd_msi(action: MsiAction) -> Result<()> {
+    use vendor::msi;
+    match action {
+        MsiAction::List => {
+            for setting in msi::SETTINGS {
+                if setting.writable {
+                    println!("{}", setting.name);
+                } else {
+                    println!("{}  (read-only)", setting.name);
+                }
+            }
+            Ok(())
+        }
+        MsiAction::Probe => msi::probe(),
+        MsiAction::Get { setting } => {
+            let value = msi::get(&setting)?;
+            println!("{setting}: {value}");
+            Ok(())
+        }
+        MsiAction::Set { setting, value } => {
+            msi::set(&setting, value)?;
+            // sets are not acknowledged, so show the read-back when we can
+            match msi::get(&setting) {
+                Ok(now) => println!("{setting} set to {value} (reads back {now})"),
+                Err(_) => println!("{setting} set to {value} (no read-back)"),
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_mode(cfg: &Config, model: Option<&str>, name: &str, state: ModeState) -> Result<()> {
+    let Some((canonical_name, mode)) = cfg.mode(name) else {
+        let known = cfg.modes.keys().cloned().collect::<Vec<_>>().join(", ");
+        bail!("unknown mode '{name}'. known: {known}");
+    };
+    let actions = match state {
+        ModeState::On => &mode.on,
+        ModeState::Off => &mode.off,
+    };
+    action::run(cfg, model, actions)?;
+    println!(
+        "mode {canonical_name} {}",
+        match state {
+            ModeState::On => "on",
+            ModeState::Off => "off",
+        }
+    );
+    Ok(())
+}
+
 fn cmd_startup(cfg: &Config, config_path: Option<&Path>, remove: bool) -> Result<()> {
     if remove {
         println!("removed startup entry ({})", startup::uninstall()?);
         return Ok(());
     }
-    // `listen` is the full daemon: hotkeys plus the USB watcher when [usb] is
-    // configured. Fall back to `watch` only when there are no hotkeys to bind.
-    let mode = if !cfg.hotkeys.is_empty() {
-        "listen"
-    } else if cfg.usb.is_some() {
-        "watch"
-    } else {
+    if cfg.hotkeys.is_empty() && cfg.usb.is_none() {
         eprintln!(
-            "monkey: warning: no [usb] or [hotkeys] in config, so the daemon exits at once; add one and re-run"
+            "monkey: warning: no [hotkeys] or [usb] in config, so the daemon exits at once; add one and re-run"
         );
-        "listen"
-    };
+    }
     let exe = std::env::current_exe().context("finding the monkey executable")?;
     let config_abs = config::resolve_path(config_path)
         .map(std::path::absolute)
         .transpose()
         .context("resolving the config path")?;
-    let at = startup::install(&exe, config_abs.as_deref(), mode)?;
-    println!("registered `monkey {mode}` at login ({at})");
+    let at = startup::install(&exe, config_abs.as_deref(), "watch")?;
+    println!("registered `monkey watch` at login ({at})");
     println!("takes effect at your next login");
     #[cfg(target_os = "macos")]
     println!("start it now with: launchctl load \"{at}\"");

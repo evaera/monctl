@@ -2,7 +2,6 @@ use anyhow::Result;
 
 /// Wake this machine's display so the monitor, when it switches here, finds a
 /// live signal instead of a sleeping output and doesn't bounce back.
-
 #[cfg(windows)]
 pub fn wake() -> Result<()> {
     use windows_sys::Win32::System::Power::{

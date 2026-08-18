@@ -14,13 +14,32 @@ usbc = 16
 hdmi1 = 17
 hdmi2 = 18
 
-# combo -> input, for `monkey listen`. ctrl/alt/shift/cmd plus a key.
+# combo -> input, for `monkey watch`. ctrl/alt/shift/cmd plus a key.
 # With a KM switch, bind each machine to the other one's input (see README).
 [hotkeys]
 "ctrl+alt+f10" = "usbc"
+"ctrl+alt+p" = "pbp"
 
-# `monkey watch`: follow a USB device (the keyboard on the KM switch) across
-# machines. This is the DisplayPort PC: when the keyboard arrives, show this PC;
+# Example: One-key PBP for the MPG 491CQPX QD-OLED, spoken straight to the monitor
+# over its USB upstream cable. The panel refuses PBP while DSC is on, hence the ordering.
+[modes.pbp]
+pause_usb = true
+on = [
+  { msi = { command = "adaptive_sync", value = 0 } },
+  { wait_ms = 3000 },
+  { msi = { command = "dsc", value = 0 } },
+  { wait_ms = 3000 },
+  { msi = { command = "pip_pbp", value = 2 } },
+]
+off = [
+  { msi = { command = "pip_pbp", value = 0 } },
+  { wait_ms = 3000 },
+  { msi = { command = "dsc", value = 1 } },
+  { wait_ms = 3000 },
+  { msi = { command = "adaptive_sync", value = 1 } },
+]
+
+# Follow a USB device (the keyboard on the KM switch) across machines. This is the DisplayPort PC: when the keyboard arrives, show this PC;
 # when it leaves, hand the monitor to the Mac (USB-C). `monkey usb` lists IDs.
 [usb]
 device = "3297:1977"

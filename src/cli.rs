@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, PartialEq, Eq)]
@@ -35,9 +35,25 @@ pub enum Command {
     },
     /// Toggle between the two `toggle` inputs
     Toggle,
-    /// Watch the config's global hotkeys
-    Listen,
-    /// Switch input when the configured USB device connects/disconnects
+    /// Apply one side of a configured mode
+    Mode {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(value_enum)]
+        state: ModeState,
+    },
+    /// Read or change Windows HDR for the selected display
+    Hdr {
+        #[arg(value_enum)]
+        state: Option<ModeState>,
+    },
+    /// Vendor-specific monitor control beyond DDC/CI
+    Vendor {
+        #[command(subcommand)]
+        vendor: VendorCommand,
+    },
+    /// Daemon: global hotkeys and the [usb] watcher (alias: listen)
+    #[command(alias = "listen")]
     Watch,
     /// List connected USB devices (to find a VID:PID)
     Usb,
@@ -50,6 +66,42 @@ pub enum Command {
     // bare `monkey <input>`, shorthand for `set <input>`
     #[command(external_subcommand)]
     Switch(Vec<String>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ModeState {
+    On,
+    Off,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum VendorCommand {
+    /// MSI gaming monitors, over the scaler's USB HID protocol
+    Msi {
+        #[command(subcommand)]
+        action: MsiAction,
+    },
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum MsiAction {
+    /// List the known settings
+    #[command(alias = "ls")]
+    List,
+    /// List MSI HID devices and probe which one is the monitor
+    Probe,
+    /// Read a setting, e.g. `monkey msi get pip_pbp`
+    Get {
+        #[arg(value_name = "SETTING")]
+        setting: String,
+    },
+    /// Write a setting, e.g. `monkey msi set pip_pbp 2`
+    Set {
+        #[arg(value_name = "SETTING")]
+        setting: String,
+        #[arg(value_name = "VALUE")]
+        value: u16,
+    },
 }
 
 #[cfg(test)]
@@ -73,5 +125,70 @@ mod tests {
     fn bare_input_is_shorthand_for_set() {
         let cli = Cli::try_parse_from(["monkey", "usbc"]).unwrap();
         assert_eq!(cli.command, Command::Switch(vec!["usbc".into()]));
+    }
+
+    #[test]
+    fn parses_mode_state() {
+        let cli = Cli::try_parse_from(["monkey", "mode", "pbp", "off"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Mode {
+                name: "pbp".into(),
+                state: ModeState::Off,
+            }
+        );
+    }
+
+    #[test]
+    fn listen_is_an_alias_for_watch() {
+        assert_eq!(
+            Cli::try_parse_from(["monkey", "listen"]).unwrap().command,
+            Command::Watch
+        );
+    }
+
+    #[test]
+    fn parses_vendor_msi_actions() {
+        assert_eq!(
+            Cli::try_parse_from(["monkey", "vendor", "msi", "get", "dsc"])
+                .unwrap()
+                .command,
+            Command::Vendor {
+                vendor: VendorCommand::Msi {
+                    action: MsiAction::Get {
+                        setting: "dsc".into()
+                    }
+                }
+            }
+        );
+        assert_eq!(
+            Cli::try_parse_from(["monkey", "vendor", "msi", "set", "pip_pbp", "2"])
+                .unwrap()
+                .command,
+            Command::Vendor {
+                vendor: VendorCommand::Msi {
+                    action: MsiAction::Set {
+                        setting: "pip_pbp".into(),
+                        value: 2,
+                    }
+                }
+            }
+        );
+    }
+
+    #[test]
+    fn parses_hdr_read_and_write() {
+        assert_eq!(
+            Cli::try_parse_from(["monkey", "hdr"]).unwrap().command,
+            Command::Hdr { state: None }
+        );
+        assert_eq!(
+            Cli::try_parse_from(["monkey", "hdr", "on"])
+                .unwrap()
+                .command,
+            Command::Hdr {
+                state: Some(ModeState::On),
+            }
+        );
     }
 }

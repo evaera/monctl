@@ -2,6 +2,8 @@ use crate::config::Config;
 use crate::monitor::{self, InputSource};
 use anyhow::{Context, Result, bail};
 use nusb::MaybeFuture;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const POLL: Duration = Duration::from_millis(500);
@@ -20,6 +22,14 @@ pub fn list() -> Result<()> {
 
 /// Watch the configured USB device and switch the monitor on connect/disconnect.
 pub fn watch(config: &Config, model: Option<&str>) -> Result<()> {
+    watch_with_pause(config, model, Arc::new(AtomicBool::new(false)))
+}
+
+pub fn watch_with_pause(
+    config: &Config,
+    model: Option<&str>,
+    paused: Arc<AtomicBool>,
+) -> Result<()> {
     let usb = config.usb.as_ref().context(
         "no [usb] section in monkey.toml (device = \"3297:1977\", on_connect/on_disconnect)",
     )?;
@@ -44,6 +54,7 @@ pub fn watch(config: &Config, model: Option<&str>) -> Result<()> {
     let wake_settle = Duration::from_millis(usb.wake_settle_ms);
 
     let mut present = device_present(vid, pid)?;
+    let mut was_paused = paused.load(Ordering::SeqCst);
     let model = model.map(str::to_owned);
     println!(
         "watching USB {} ({}), monitor follows on connect/disconnect. ctrl+c to quit.",
@@ -57,11 +68,31 @@ pub fn watch(config: &Config, model: Option<&str>) -> Result<()> {
             Ok(p) => p,
             Err(_) => continue, // transient enumeration hiccup; try again next tick
         };
-        if now == present {
+        let is_paused = paused.load(Ordering::SeqCst);
+        if is_paused {
+            if !was_paused {
+                println!("USB input switching paused by an active mode");
+            }
+            was_paused = true;
+            present = now;
+            continue;
+        }
+        let resumed = was_paused;
+        if resumed {
+            println!("USB input switching resumed; synchronizing current device state");
+            was_paused = false;
+        }
+        if now == present && !resumed {
             continue;
         }
         present = now;
-        let event = if now { "connected" } else { "disconnected" };
+        let event = if resumed {
+            "resume"
+        } else if now {
+            "connected"
+        } else {
+            "disconnected"
+        };
         // wake first, so the input switch (ours or the other machine's) finds
         // this output already live
         let wake = if now {

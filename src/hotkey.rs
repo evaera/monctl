@@ -3,37 +3,62 @@ use crate::monitor::{self, InputSource};
 use anyhow::{Context, Result, anyhow, bail};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 struct Binding {
     combo: String,
-    target: String,
-    value: u16,
+    target: BindingTarget,
 }
 
-pub fn listen(config: &Config, model: Option<&str>) -> Result<()> {
+enum BindingTarget {
+    Input { name: String, value: u16 },
+    Mode { name: String },
+}
+
+pub fn watch(config: &Config, model: Option<&str>) -> Result<()> {
     if config.hotkeys.is_empty() {
-        bail!("no [hotkeys] in monkey.toml, e.g. \"ctrl+alt+1\" = \"dp\"");
+        // no hotkeys to bind: the daemon is just the USB watcher
+        if config.usb.is_some() {
+            return crate::usb::watch(config, model);
+        }
+        bail!(
+            "nothing to run: monkey.toml has no [hotkeys] (e.g. \"ctrl+alt+1\" = \"dp\") and no [usb]"
+        );
     }
 
     let manager = GlobalHotKeyManager::new().context("starting the hotkey manager")?;
     let mut bindings: HashMap<u32, Binding> = HashMap::new();
     for (combo, target) in &config.hotkeys {
         let hotkey = HotKey::from_str(combo).map_err(|e| anyhow!("bad hotkey '{combo}': {e}"))?;
-        let value = config
-            .resolve_input(target)
-            .with_context(|| format!("hotkey '{combo}'"))?;
+        let binding_target = if let Some((name, _)) = config.mode(target) {
+            BindingTarget::Mode {
+                name: name.to_string(),
+            }
+        } else {
+            BindingTarget::Input {
+                name: target.clone(),
+                value: config
+                    .resolve_input(target)
+                    .with_context(|| format!("hotkey '{combo}'"))?,
+            }
+        };
         manager
             .register(hotkey)
             .with_context(|| format!("registering '{combo}' (already taken?)"))?;
-        println!("{combo:<16} -> {target} ({value})");
+        match &binding_target {
+            BindingTarget::Input { value, .. } => {
+                println!("{combo:<16} -> {target} ({value})")
+            }
+            BindingTarget::Mode { .. } => println!("{combo:<16} -> mode {target}"),
+        }
         bindings.insert(
             hotkey.id(),
             Binding {
                 combo: combo.clone(),
-                target: target.clone(),
-                value,
+                target: binding_target,
             },
         );
     }
@@ -42,11 +67,13 @@ pub fn listen(config: &Config, model: Option<&str>) -> Result<()> {
     // One daemon handles every trigger. If a USB device is also configured,
     // follow it on a background thread while this thread runs the hotkey loop,
     // which must own the main thread for the platform event pump.
+    let usb_paused = Arc::new(AtomicBool::new(false));
     if config.usb.is_some() {
         let cfg = config.clone();
         let model = model.map(str::to_owned);
+        let paused = usb_paused.clone();
         std::thread::spawn(move || {
-            if let Err(e) = crate::usb::watch(&cfg, model.as_deref()) {
+            if let Err(e) = crate::usb::watch_with_pause(&cfg, model.as_deref(), paused) {
                 eprintln!("usb watch stopped: {e:#}");
             }
         });
@@ -54,16 +81,74 @@ pub fn listen(config: &Config, model: Option<&str>) -> Result<()> {
 
     // owned so the closure can outlive `listen` (macOS keeps it in a callback)
     let model = model.map(str::to_owned);
+    let config = config.clone();
+    let mode_states: Arc<Mutex<BTreeMap<String, bool>>> = Arc::new(Mutex::new(
+        config
+            .modes
+            .keys()
+            .map(|name| (name.clone(), false))
+            .collect(),
+    ));
     run(move |id| {
         let Some(b) = bindings.get(&id) else { return };
-        // re-pick the display; it may have dropped after sleep
-        let result = monitor::open(model.as_deref()).and_then(|mut m| {
-            m.set_input(b.value)?;
-            Ok(m.label)
-        });
-        match result {
-            Ok(label) => println!("{} -> {} ({}) on {label}", b.combo, b.target, b.value),
-            Err(e) => eprintln!("{} -> {} failed: {e:#}", b.combo, b.target),
+        match &b.target {
+            BindingTarget::Input { name, value } => {
+                // re-pick the display; it may have dropped after sleep
+                let result = monitor::open(model.as_deref()).and_then(|mut m| {
+                    m.set_input(*value)?;
+                    Ok(m.label)
+                });
+                match result {
+                    Ok(label) => println!("{} -> {} ({}) on {label}", b.combo, name, value),
+                    Err(e) => eprintln!("{} -> {} failed: {e:#}", b.combo, name),
+                }
+            }
+            BindingTarget::Mode { name } => {
+                let mode = &config.modes[name];
+                let turning_on = !mode_states
+                    .lock()
+                    .expect("mode state poisoned")
+                    .get(name)
+                    .copied()
+                    .unwrap_or(false);
+
+                // Pause before the first enabling command, and leave the watcher
+                // paused through the complete disabling/restoration sequence.
+                if turning_on && mode.pause_usb {
+                    usb_paused.store(true, Ordering::SeqCst);
+                }
+                let actions = if turning_on { &mode.on } else { &mode.off };
+                let result = crate::action::run(&config, model.as_deref(), actions);
+                match result {
+                    Ok(()) => {
+                        let mut states = mode_states.lock().expect("mode state poisoned");
+                        states.insert(name.clone(), turning_on);
+                        let pause = config.modes.iter().any(|(mode_name, definition)| {
+                            definition.pause_usb && states.get(mode_name).copied().unwrap_or(false)
+                        });
+                        usb_paused.store(pause, Ordering::SeqCst);
+                        println!(
+                            "{} -> mode {} {}",
+                            b.combo,
+                            name,
+                            if turning_on { "on" } else { "off" }
+                        );
+                    }
+                    Err(e) => {
+                        let states = mode_states.lock().expect("mode state poisoned");
+                        let pause = config.modes.iter().any(|(mode_name, definition)| {
+                            definition.pause_usb && states.get(mode_name).copied().unwrap_or(false)
+                        });
+                        usb_paused.store(pause, Ordering::SeqCst);
+                        eprintln!(
+                            "{} -> mode {} {} failed: {e:#}",
+                            b.combo,
+                            name,
+                            if turning_on { "on" } else { "off" }
+                        );
+                    }
+                }
+            }
         }
     })
 }
