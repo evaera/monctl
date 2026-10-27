@@ -1,24 +1,39 @@
-# Found by searching up from the working directory to the filesystem root
+# Copy to monctl's user config directory as config.toml (see README).
 
-# EDID model substring used to pick the display. `monkey list` shows the names.
+# EDID model substring used to pick the display. `monctl list` shows the names.
 model = "MPG"
 
-# What `monkey toggle` flips between.
-toggle = ["dp", "usbc"]
-
 # name -> VCP 0x60 value. 15 = DisplayPort is confirmed; the rest are guesses
-# until checked with `monkey list`.
+# until checked with `monctl list`.
 [inputs]
 dp = 15
 usbc = 16
 hdmi1 = 17
 hdmi2 = 18
 
-# combo -> input, for `monkey watch`. ctrl/alt/shift/cmd plus a key.
+# combo -> input or mode, for `monctl watch`. ctrl/alt/shift/cmd plus a key.
 # With a KM switch, bind each machine to the other one's input (see README).
 [hotkeys]
-"ctrl+alt+f10" = "usbc"
-"ctrl+alt+p" = "pbp"
+"ctrl+alt+f10" = { input = "usbc" }
+"ctrl+alt+p" = { mode = "pbp" }
+
+# F11 always holds Optix Scope on while Wardogs is focused.
+# Right click also holds it on after wheel-left; wheel-right disables that hold.
+[[hold_hotkeys]]
+keys = ["f11"]
+process = "WardogsClient-Win64-Shipping.exe"
+mode = "optix_scope"
+
+[[hold_hotkeys]]
+keys = ["right_mouse"]
+process = "WardogsClient-Win64-Shipping.exe"
+mode = "optix_scope"
+enable_on = "wheel_left"
+disable_on = "wheel_right"
+
+[modes.optix_scope]
+on = [{ msi = { command = "optix_scope", value = 1 } }]
+off = [{ msi = { command = "optix_scope", value = 0 } }]
 
 # Example: One-key PBP for the MPG 491CQPX QD-OLED, spoken straight to the monitor
 # over its USB upstream cable. The panel refuses PBP while DSC is on, hence the ordering.
@@ -40,7 +55,7 @@ off = [
 ]
 
 # Follow a USB device (the keyboard on the KM switch) across machines. This is the DisplayPort PC: when the keyboard arrives, show this PC;
-# when it leaves, hand the monitor to the Mac (USB-C). `monkey usb` lists IDs.
+# when it leaves, hand the monitor to the Mac (USB-C). `monctl usb` lists IDs.
 [usb]
 device = "3297:1977"
 on_connect = "dp"

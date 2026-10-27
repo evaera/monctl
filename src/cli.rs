@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug, PartialEq, Eq)]
 #[command(
-    name = "monkey",
+    name = "monctl",
     version,
     about = "Switch a monitor's input over DDC/CI",
     arg_required_else_help = true
@@ -13,7 +13,7 @@ pub struct Cli {
     #[arg(short, long, global = true, value_name = "SUBSTR")]
     pub model: Option<String>,
 
-    /// Path to a monkey.toml
+    /// Path to a config.toml
     #[arg(short, long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
@@ -28,13 +28,18 @@ pub enum Command {
     /// List displays and their inputs
     #[command(alias = "ls")]
     List,
-    /// Switch input by name or number (or just `monkey <input>`)
+    /// Switch input by name or number (or just `monctl <input>`)
     Set {
         #[arg(value_name = "INPUT")]
         input: String,
     },
-    /// Toggle between the two `toggle` inputs
-    Toggle,
+    /// Toggle between two inputs, by name or number
+    Toggle {
+        #[arg(value_name = "INPUT_A")]
+        input_a: String,
+        #[arg(value_name = "INPUT_B")]
+        input_b: String,
+    },
     /// Apply one side of a configured mode
     Mode {
         #[arg(value_name = "NAME")]
@@ -57,13 +62,13 @@ pub enum Command {
     Watch,
     /// List connected USB devices (to find a VID:PID)
     Usb,
-    /// Run `monkey listen` at login (--remove to undo)
+    /// Run `monctl listen` at login (--remove to undo)
     Startup {
         /// Remove the startup entry instead of adding it
         #[arg(long)]
         remove: bool,
     },
-    // bare `monkey <input>`, shorthand for `set <input>`
+    // bare `monctl <input>`, shorthand for `set <input>`
     #[command(external_subcommand)]
     Switch(Vec<String>),
 }
@@ -90,12 +95,12 @@ pub enum MsiAction {
     List,
     /// List MSI HID devices and probe which one is the monitor
     Probe,
-    /// Read a setting, e.g. `monkey msi get pip_pbp`
+    /// Read a setting, e.g. `monctl msi get pip_pbp`
     Get {
         #[arg(value_name = "SETTING")]
         setting: String,
     },
-    /// Write a setting, e.g. `monkey msi set pip_pbp 2`
+    /// Write a setting, e.g. `monctl msi set pip_pbp 2`
     Set {
         #[arg(value_name = "SETTING")]
         setting: String,
@@ -116,20 +121,35 @@ mod tests {
 
     #[test]
     fn parses_global_flag_and_subcommand() {
-        let cli = Cli::try_parse_from(["monkey", "-m", "Dell", "set", "16"]).unwrap();
+        let cli = Cli::try_parse_from(["monctl", "-m", "Dell", "set", "16"]).unwrap();
         assert_eq!(cli.model.as_deref(), Some("Dell"));
         assert_eq!(cli.command, Command::Set { input: "16".into() });
     }
 
     #[test]
     fn bare_input_is_shorthand_for_set() {
-        let cli = Cli::try_parse_from(["monkey", "usbc"]).unwrap();
+        let cli = Cli::try_parse_from(["monctl", "usbc"]).unwrap();
         assert_eq!(cli.command, Command::Switch(vec!["usbc".into()]));
     }
 
     #[test]
+    fn toggle_requires_two_explicit_inputs() {
+        let cli = Cli::try_parse_from(["monctl", "toggle", "dp", "16"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Toggle {
+                input_a: "dp".into(),
+                input_b: "16".into()
+            }
+        );
+        assert!(Cli::try_parse_from(["monctl", "toggle"]).is_err());
+        assert!(Cli::try_parse_from(["monctl", "toggle", "dp"]).is_err());
+        assert!(Cli::try_parse_from(["monctl", "toggle", "dp", "usbc", "hdmi1"]).is_err());
+    }
+
+    #[test]
     fn parses_mode_state() {
-        let cli = Cli::try_parse_from(["monkey", "mode", "pbp", "off"]).unwrap();
+        let cli = Cli::try_parse_from(["monctl", "mode", "pbp", "off"]).unwrap();
         assert_eq!(
             cli.command,
             Command::Mode {
@@ -142,7 +162,7 @@ mod tests {
     #[test]
     fn listen_is_an_alias_for_watch() {
         assert_eq!(
-            Cli::try_parse_from(["monkey", "listen"]).unwrap().command,
+            Cli::try_parse_from(["monctl", "listen"]).unwrap().command,
             Command::Watch
         );
     }
@@ -150,7 +170,7 @@ mod tests {
     #[test]
     fn parses_vendor_msi_actions() {
         assert_eq!(
-            Cli::try_parse_from(["monkey", "vendor", "msi", "get", "dsc"])
+            Cli::try_parse_from(["monctl", "vendor", "msi", "get", "dsc"])
                 .unwrap()
                 .command,
             Command::Vendor {
@@ -162,7 +182,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Cli::try_parse_from(["monkey", "vendor", "msi", "set", "pip_pbp", "2"])
+            Cli::try_parse_from(["monctl", "vendor", "msi", "set", "pip_pbp", "2"])
                 .unwrap()
                 .command,
             Command::Vendor {
@@ -179,11 +199,11 @@ mod tests {
     #[test]
     fn parses_hdr_read_and_write() {
         assert_eq!(
-            Cli::try_parse_from(["monkey", "hdr"]).unwrap().command,
+            Cli::try_parse_from(["monctl", "hdr"]).unwrap().command,
             Command::Hdr { state: None }
         );
         assert_eq!(
-            Cli::try_parse_from(["monkey", "hdr", "on"])
+            Cli::try_parse_from(["monctl", "hdr", "on"])
                 .unwrap()
                 .command,
             Command::Hdr {

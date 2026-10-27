@@ -6,6 +6,8 @@ mod action;
 mod cli;
 mod config;
 mod hdr;
+#[cfg(windows)]
+mod hold_hotkey;
 mod hotkey;
 mod monitor;
 mod startup;
@@ -31,7 +33,7 @@ fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("monkey: {e:#}");
+            eprintln!("monctl: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -60,7 +62,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Read => cmd_read(&cfg, model),
         Command::List => cmd_list(&cfg),
         Command::Set { input } => cmd_set(&cfg, model, &input),
-        Command::Toggle => cmd_toggle(&cfg, model),
+        Command::Toggle { input_a, input_b } => cmd_toggle(&cfg, model, &input_a, &input_b),
         Command::Mode { name, state } => cmd_mode(&cfg, model, &name, state),
         Command::Hdr { state } => cmd_hdr(model, state),
         Command::Vendor { vendor } => match vendor {
@@ -71,7 +73,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Startup { remove } => cmd_startup(&cfg, config.as_deref(), remove),
         Command::Switch(args) => match args.as_slice() {
             [input] => cmd_set(&cfg, model, input),
-            _ => bail!("expected one input, e.g. `monkey usbc`"),
+            _ => bail!("expected one input, e.g. `monctl usbc`"),
         },
     }
 }
@@ -141,18 +143,18 @@ fn cmd_startup(cfg: &Config, config_path: Option<&Path>, remove: bool) -> Result
         println!("removed startup entry ({})", startup::uninstall()?);
         return Ok(());
     }
-    if cfg.hotkeys.is_empty() && cfg.usb.is_none() {
+    if cfg.hotkeys.is_empty() && cfg.usb.is_none() && cfg.hold_hotkeys.is_empty() {
         eprintln!(
-            "monkey: warning: no [hotkeys] or [usb] in config, so the daemon exits at once; add one and re-run"
+            "monctl: warning: no [hotkeys], [usb], or [[hold_hotkeys]] in config, so the daemon exits at once; add one and re-run"
         );
     }
-    let exe = std::env::current_exe().context("finding the monkey executable")?;
+    let exe = std::env::current_exe().context("finding the monctl executable")?;
     let config_abs = config::resolve_path(config_path)
         .map(std::path::absolute)
         .transpose()
         .context("resolving the config path")?;
     let at = startup::install(&exe, config_abs.as_deref(), "watch")?;
-    println!("registered `monkey watch` at login ({at})");
+    println!("registered `monctl watch` at login ({at})");
     println!("takes effect at your next login");
     #[cfg(target_os = "macos")]
     println!("start it now with: launchctl load \"{at}\"");
@@ -197,10 +199,13 @@ fn cmd_set(cfg: &Config, model: Option<&str>, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_toggle(cfg: &Config, model: Option<&str>) -> Result<()> {
+fn cmd_toggle(cfg: &Config, model: Option<&str>, input_a: &str, input_b: &str) -> Result<()> {
+    let a = cfg.resolve_input(input_a)?;
+    let b = cfg.resolve_input(input_b)?;
     let mut mon = monitor::open(model)?;
     let current = mon.get_input()?;
-    let target = cfg.toggle_target(current)?;
+    // Flip between the pair; when on neither, pick the first.
+    let target = if current == a { b } else { a };
     mon.set_input(target)?;
     let name = cfg.name_for_value(target).unwrap_or("?");
     println!("toggled {} from {current} to {target} ({name})", mon.label);

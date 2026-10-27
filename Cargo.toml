@@ -1,13 +1,16 @@
 [package]
-name = "monkey"
+name = "monctl"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+description = "Monitor input switching and hotkey-driven modes over DDC/CI and USB"
+repository = "https://github.com/evaera/monctl"
 
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 ddc-hi = "0.4.1"
+dirs = "7.0.0"
 global-hotkey = "0.8.0"
 nusb = "0.2.4"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -18,7 +21,7 @@ auto-launch = "0.5"
 
 [target."cfg(windows)".dependencies]
 hidapi = { version = "2", default-features = false, features = ["windows-native"] }
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation", "Win32_System_Console", "Win32_System_Power", "Win32_System_Threading", "Win32_Devices_Display", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation", "Win32_System_Console", "Win32_System_Power", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Devices_Display", "Win32_Graphics_Gdi"] }
 winreg = "0.52"
 
 [profile.release]

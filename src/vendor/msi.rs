@@ -40,6 +40,7 @@ const fn ro(name: &'static str, code: &'static [u8; 5]) -> Setting {
 pub const SETTINGS: &[Setting] = &[
     rw("adaptive_sync", b"00280"),
     rw("dsc", b"002D0"),
+    rw("optix_scope", b"002A0"),
     rw("pip_pbp", b"00600"),
     rw("pbp_layout", b"006=0"),
     rw("pbp_source", b"00610"),
@@ -123,27 +124,58 @@ fn parse_reply(setting: &Setting, frame: &[u8]) -> Option<u16> {
 }
 
 #[cfg(windows)]
-pub use platform::{get, probe, set};
+pub use platform::{get, probe, set, set_while};
 
 #[cfg(windows)]
 mod platform {
     use super::{Setting, get_frame, parse_reply, resolve, set_frame};
     use anyhow::{Context, Result, bail};
     use hidapi::{HidApi, HidDevice};
+    use std::cell::RefCell;
     use std::time::{Duration, Instant};
 
     const MSI_VID: u16 = 0x1462;
     const REPORT_LEN: usize = 64;
     const READ_TIMEOUT_MS: i32 = 3000;
 
+    thread_local! {
+        // Hold bindings should not enumerate/probe USB on every transition.
+        static WRITE_DEVICE: RefCell<Option<HidDevice>> = const { RefCell::new(None) };
+    }
+
     /// Sets are fire-and-forget: the scaler echoes gets but not sets, so
     /// (like Gaming Intelligence) success here means "delivered", not
     /// "applied". Read the setting back to confirm when that matters.
     pub fn set(name: &str, value: u16) -> Result<()> {
+        set_while(name, value, &mut || true).map(|_| ())
+    }
+
+    pub fn set_while(
+        name: &str,
+        value: u16,
+        keep_running: &mut dyn FnMut() -> bool,
+    ) -> Result<bool> {
         let setting = resolve(name)?;
         let frame = set_frame(setting, value)?;
-        let device = open_monitor()?;
-        send_only(&device, &frame, setting)
+        WRITE_DEVICE.with(|cached| {
+            let mut cached = cached.borrow_mut();
+            if cached.is_none() {
+                *cached = Some(open_monitor()?);
+            }
+            let device = cached.as_ref().expect("device opened");
+            let _guard = MonitorMutex::acquire();
+            drain(device);
+            // Discovery and the MSI mutex can block. Recheck the hold/focus
+            // after both, so an old press cannot activate a mode later.
+            if !keep_running() {
+                return Ok(false);
+            }
+            let result = write_frame(device, &frame, setting);
+            if result.is_err() {
+                *cached = None;
+            }
+            result.map(|_| true)
+        })
     }
 
     pub fn get(name: &str) -> Result<u16> {
@@ -244,16 +276,10 @@ mod platform {
         let written = device
             .write(&report)
             .with_context(|| format!("writing MSI command to {}", setting.name))?;
-        if std::env::var_os("MONKEY_MSI_DEBUG").is_some() {
+        if std::env::var_os("MONCTL_MSI_DEBUG").is_some() {
             eprintln!("msi debug: wrote {written} bytes: {:02x?}", &report[..16]);
         }
         Ok(())
-    }
-
-    fn send_only(device: &HidDevice, payload: &[u8], setting: &Setting) -> Result<()> {
-        let _guard = MonitorMutex::acquire();
-        drain(device);
-        write_frame(device, payload, setting)
     }
 
     /// One command/reply exchange. Returns the reply value, or None when the
@@ -262,7 +288,7 @@ mod platform {
         let _guard = MonitorMutex::acquire();
         drain(device);
         write_frame(device, payload, setting)?;
-        let debug = std::env::var_os("MONKEY_MSI_DEBUG").is_some();
+        let debug = std::env::var_os("MONCTL_MSI_DEBUG").is_some();
 
         let deadline = Instant::now() + Duration::from_millis(READ_TIMEOUT_MS as u64);
         loop {
@@ -300,7 +326,7 @@ mod platform {
     /// scaler with this global mutex-as-flag: holding it means "bus busy", so
     /// take it for the duration of each exchange to avoid interleaving with
     /// them. Best-effort: after a bounded wait we proceed anyway rather than
-    /// hang monkey on a wedged MSI process.
+    /// hang monctl on a wedged MSI process.
     struct MonitorMutex(Option<isize>);
 
     impl MonitorMutex {
@@ -357,6 +383,14 @@ pub fn get(_name: &str) -> Result<u16> {
 }
 
 #[cfg(not(windows))]
+pub fn set_while(name: &str, value: u16, keep_running: &mut dyn FnMut() -> bool) -> Result<bool> {
+    if !keep_running() {
+        return Ok(false);
+    }
+    set(name, value).map(|_| true)
+}
+
+#[cfg(not(windows))]
 pub fn probe() -> Result<()> {
     bail!("MSI monitor control is only available on Windows")
 }
@@ -382,6 +416,10 @@ mod tests {
         assert_eq!(&f, b"5b00280000\r");
         let f = set_frame(resolve("dsc").unwrap(), 1).unwrap();
         assert_eq!(&f, b"5b002D0001\r");
+        let f = set_frame(resolve("optix_scope").unwrap(), 1).unwrap();
+        assert_eq!(&f, b"5b002A0001\r");
+        let f = set_frame(resolve("optix_scope").unwrap(), 0).unwrap();
+        assert_eq!(&f, b"5b002A0000\r");
         let f = set_frame(resolve("pip_pbp").unwrap(), 2).unwrap();
         assert_eq!(&f, b"5b00600002\r");
         let f = set_frame(resolve("pbp_layout").unwrap(), 1).unwrap();

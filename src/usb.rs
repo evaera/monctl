@@ -31,7 +31,7 @@ pub fn watch_with_pause(
     paused: Arc<AtomicBool>,
 ) -> Result<()> {
     let usb = config.usb.as_ref().context(
-        "no [usb] section in monkey.toml (device = \"3297:1977\", on_connect/on_disconnect)",
+        "no [usb] section in config.toml (device = \"3297:1977\", on_connect/on_disconnect)",
     )?;
     let (vid, pid) = usb.ids()?;
     let on_connect = usb

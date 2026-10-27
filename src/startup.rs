@@ -10,7 +10,7 @@ pub fn uninstall() -> Result<String> {
 }
 
 #[cfg(any(windows, target_os = "macos"))]
-const NAME: &str = "monkey";
+const NAME: &str = "monctl";
 
 // The entry is keyed by NAME on both platforms (registry value name on Windows,
 // plist basename on macOS), so uninstall works with any app_path.
@@ -52,7 +52,7 @@ mod platform {
     }
 
     pub fn uninstall() -> Result<String> {
-        let exe = std::env::current_exe().context("finding the monkey executable")?;
+        let exe = std::env::current_exe().context("finding the monctl executable")?;
         match super::launcher(&quoted(&exe), &[])?.disable() {
             Ok(()) => {}
             Err(auto_launch::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -91,12 +91,12 @@ mod platform {
             // joined the same way auto-launch builds the Run value
             let value = format!(
                 "{} {}",
-                quoted(Path::new(r"C:\a b\monkey.exe")),
-                args(Some(Path::new(r"C:\u\monkey.toml")), "watch").join(" ")
+                quoted(Path::new(r"C:\a b\monctl.exe")),
+                args(Some(Path::new(r"C:\u\config.toml")), "watch").join(" ")
             );
             assert_eq!(
                 value,
-                r#""C:\a b\monkey.exe" --config "C:\u\monkey.toml" watch"#
+                r#""C:\a b\monctl.exe" --config "C:\u\config.toml" watch"#
             );
         }
     }
@@ -133,7 +133,7 @@ mod platform {
     }
 
     pub fn uninstall() -> Result<String> {
-        let exe = std::env::current_exe().context("finding the monkey executable")?;
+        let exe = std::env::current_exe().context("finding the monctl executable")?;
         super::launcher(&exe.display().to_string(), &[])?
             .disable()
             .context("removing the launch agent")?;
@@ -147,10 +147,10 @@ mod platform {
     use std::path::Path;
 
     pub fn install(_exe: &Path, _config: Option<&Path>, _mode: &str) -> Result<String> {
-        bail!("`monkey startup` only works on Windows and macOS");
+        bail!("`monctl startup` only works on Windows and macOS");
     }
 
     pub fn uninstall() -> Result<String> {
-        bail!("`monkey startup` only works on Windows and macOS");
+        bail!("`monctl startup` only works on Windows and macOS");
     }
 }

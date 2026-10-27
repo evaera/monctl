@@ -1,30 +1,31 @@
-# monkey
-(mon-key)
+# monctl
 
 Switches an external monitor's active input over DDC/CI (VCP `0x60`). One small
 binary for Windows and macOS, instead of flaky vendor OSD utilities. The
 motivating case is two machines sharing one monitor, one on DisplayPort and one
 on USB-C.
 
-## build
+## install
 
 ```
-cargo build --release
+cargo install monctl --locked
 ```
+
+Installs the `monctl` command on Windows or macOS. From source: `cargo build --release`.
 
 ## use
 
 ```
-monkey <input>        switch by name or raw value, e.g. `monkey usbc`, `monkey 16`
-monkey toggle         flip between the two `toggle` inputs
-monkey mode <n> on|off  apply one side of a configured stateful mode
-monkey hdr [on|off]    read or change Windows HDR for the selected display
-monkey read           current input value
-monkey list           every display and its current input
-monkey vendor msi ... vendor-specific control; see `vendors` below
-monkey watch          daemon: global hotkeys plus the [usb] watcher (alias: listen)
-monkey usb            list connected USB devices (to find a VID:PID)
-monkey startup        run the daemon at login (--remove to undo)
+monctl <input>        switch by name or raw value, e.g. `monctl usbc`, `monctl 16`
+monctl toggle dp usbc  flip between two inputs, by name or raw value
+monctl mode <n> on|off  apply one side of a configured stateful mode
+monctl hdr [on|off]    read or change Windows HDR for the selected display
+monctl read           current input value
+monctl list           every display and its current input
+monctl vendor msi ... vendor-specific control; see `vendors` below
+monctl watch          daemon: global hotkeys plus the [usb] watcher (alias: listen)
+monctl usb            list connected USB devices (to find a VID:PID)
+monctl startup        run the daemon at login (--remove to undo)
 ```
 
 `-m/--model <substr>` picks the display by EDID model name; `-c/--config <path>`
@@ -35,25 +36,29 @@ LaunchAgent on macOS, pinned to the config in use, windowless on Windows.
 
 ## config
 
-`monkey.toml` is found by walking up from the working directory; `--config` and
-`$MONKEY_CONFIG` override.
+Copy `config.example.toml` to your user config directory:
+
+- Windows: `%APPDATA%\monctl\config.toml`
+- macOS: `~/Library/Application Support/monctl/config.toml`
+
+`--config <path>` overrides `MONCTL_CONFIG`, which overrides the default path.
+The working directory does not affect config discovery.
 
 ```toml
 model = "MPG"            # EDID model substring used to pick the display
-toggle = ["dp", "usbc"]  # what `toggle` flips between
 
-[inputs]                 # name -> VCP 0x60 value; find them with `monkey list`
+[inputs]                 # name -> VCP 0x60 value; find them with `monctl list`
 dp = 15
 usbc = 16
 
-[hotkeys]                # combo -> input, for `monkey watch`
-"ctrl+alt+1" = "dp"
-"ctrl+alt+2" = "usbc"
+[hotkeys]                # combo -> input or mode, for `monctl watch`
+"ctrl+alt+1" = { input = "dp" }
+"ctrl+alt+2" = { input = "usbc" }
 
 # Hotkeys can also target a named mode. Actions run in order; MSI actions
 # talk to the monitor's scaler over its USB upstream cable. Raw DDC features
 # and input actions make the same mechanism useful with other monitor brands.
-"ctrl+alt+p" = "pbp"
+"ctrl+alt+p" = { mode = "pbp" }
 
 [modes.pbp]
 pause_usb = true         # ignore [usb] changes while this mode is on
@@ -73,7 +78,7 @@ off = [
 ]
 
 [usb]                    # follow a USB device across machines
-device = "3297:1977"     # VID:PID, from `monkey usb`
+device = "3297:1977"     # VID:PID, from `monctl usb`
 on_connect = "dp"        # switch here when it appears
 on_disconnect = "usbc"   # hand off when it leaves
 wake_on_connect = true   # wake this machine's screen first
@@ -106,9 +111,55 @@ Mode actions may be `{ msi = { command = "dsc", value = 0 } }`,
 paused for the complete `off` sequence, then resynchronizes the current USB
 state.
 
+### hold hotkeys (Windows)
+
+```toml
+[[hold_hotkeys]]
+keys = ["f11"]
+process = "WardogsClient-Win64-Shipping.exe"
+mode = "optix_scope"
+
+[[hold_hotkeys]]
+keys = ["right_mouse"]
+process = "WardogsClient-Win64-Shipping.exe"
+mode = "optix_scope"
+enable_on = "wheel_left"
+disable_on = "wheel_right"
+
+[modes.optix_scope]
+on = [{ msi = { command = "optix_scope", value = 1 } }]
+off = [{ msi = { command = "optix_scope", value = 0 } }]
+```
+
+With `monctl watch`, F11 holds this mode on while the named executable is
+focused (case-insensitive). The second binding lets right-click hold the same
+mode: wheel-left enables that binding, wheel-right disables it, even during
+a hold. F11 works independently. Inputs still reach the game.
+
+Any configured mode can be held. It runs `off` at startup, on release or
+focus loss, and on Ctrl+C. Keep its actions short for responsive controls.
+The mode stays on while any of its bindings is active; it cannot also be a
+toggle target. Optional `enable_on` and `disable_on` must appear together.
+Such bindings start disabled and remember in-game selections until restart.
+Hold bindings are ignored on macOS.
+
+## keys
+
+Both hotkey types accept letters, digits, F1-F24, `space`, `tab`, `enter`,
+and `escape`, ignoring case.
+
+Regular hotkeys accept modifier combinations such as `ctrl+alt+p`, using
+`ctrl`, `alt`, `shift`, and `cmd`/`super`. They also accept other keyboard
+keys such as `backspace`, `delete`, `home`, `end`, and `left`/`right`/`up`/`down`.
+
+Hold bindings accept the shared keys above plus `left_mouse`, `right_mouse`,
+`middle_mouse`, `mouse4`, and `mouse5`. Each entry in `keys` is an alternative,
+not a modifier combination. `enable_on`/`disable_on` also accept `wheel_left`
+and `wheel_right`. Mouse buttons and wheel inputs are only supported by hold bindings.
+
 ## vendors
 
-`monkey vendor <name> ...` holds vendor-specific control that DDC/CI cannot
+`monctl vendor <name> ...` holds vendor-specific control that DDC/CI cannot
 reach; each vendor also contributes a mode action of the same name. MSI is
 the first; adding another means one module under `src/vendor/`, a
 `VendorCommand` variant, and (for modes) a config action.
@@ -120,16 +171,16 @@ vid 1462), the same wire format Gaming Intelligence uses, so GI does not need
 to be running or installed.
 
 ```
-monkey vendor msi list           the known settings
-monkey vendor msi probe          find the monitor's USB control interface
-monkey vendor msi get pip_pbp    read a setting
-monkey vendor msi set pip_pbp 2  write one
+monctl vendor msi list           the known settings
+monctl vendor msi probe          find the monitor's USB control interface
+monctl vendor msi get pip_pbp    read a setting
+monctl vendor msi set pip_pbp 2  write one
 ```
 
 Settings include `pip_pbp` (0 off, 1 PIP, 2 PBP), `pbp_layout`,
-`pbp_source_1`, `pbp_source_2`, `dsc`, `adaptive_sync`, `input`, `kvm`, and
-`monitor_hdr`. Sets are fire-and-forget (the scaler only acknowledges
-reads), so `set` prints the read-back value as confirmation. PBP source
+`pbp_source_1`, `pbp_source_2`, `dsc`, `adaptive_sync`, `input`, `kvm`,
+`monitor_hdr`, and `optix_scope` (0 off, 1 on). Sets are fire-and-forget (the
+scaler only acknowledges reads), so `set` prints the read-back value as confirmation. PBP source
 values use MSI's input order (HDMI1=0, HDMI2=1, DP=2, Type-C=3), not the DDC
 `[inputs]` numbers.
 

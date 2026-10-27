@@ -85,12 +85,12 @@ fn select(model: Option<&str>) -> Result<Display> {
     }
     if displays.len() == 1 {
         eprintln!(
-            "monkey: nothing matched '{model}', using the only display ({}).",
+            "monctl: nothing matched '{model}', using the only display ({}).",
             describe(&displays[0].info)
         );
         return Ok(displays.swap_remove(0));
     }
-    bail!("no display matched '{model}'. run `monkey list` and set `model` in monkey.toml.");
+    bail!("no display matched '{model}'. run `monctl list` and set `model` in config.toml.");
 }
 
 fn matching(displays: &[Display], needle: &str) -> Option<usize> {
